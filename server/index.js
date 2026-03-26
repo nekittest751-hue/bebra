@@ -29,6 +29,7 @@ app.use(express.json());
 
 import sharp from 'sharp';
 
+// Папка для аватарок
 const uploadsDir = path.join(__dirname, '../uploads/avatars');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
@@ -36,18 +37,18 @@ if (!fs.existsSync(uploadsDir)) {
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
 const storage = multer.memoryStorage();
-const upload = multer({ storage: storage });
+const upload = multer({ storage });
 
 const JWT_SECRET = process.env.JWT_SECRET || 'bebra_super_secret';
 
-// Middleware for auth
+// Middleware для аутентификации
 const requireAuth = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Unauthorized' });
   try {
     req.user = jwt.verify(token, JWT_SECRET);
     next();
-  } catch (err) {
+  } catch {
     res.status(401).json({ error: 'Invalid token' });
   }
 };
@@ -61,6 +62,7 @@ initDb().then((db) => {
   zashitaBot = new ZashitaBot(io, db);
 }).catch(console.error);
 
+// --- Аутентификация ---
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -69,7 +71,7 @@ app.post('/api/auth/register', async (req, res) => {
     const result = await db.run('INSERT INTO users (username, password) VALUES (?, ?)', [username, hash]);
     const token = jwt.sign({ id: result.lastID, username }, JWT_SECRET);
     res.json({ token, user: { id: result.lastID, username, nickname: null, avatar: null, subscription: 'FREE' } });
-  } catch (err) {
+  } catch {
     res.status(400).json({ error: 'Username taken' });
   }
 });
@@ -84,11 +86,12 @@ app.post('/api/auth/login', async (req, res) => {
     }
     const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET);
     res.json({ token, user: { id: user.id, username: user.username, nickname: user.nickname, avatar: user.avatar, subscription: user.subscription } });
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: 'Server error' });
   }
 });
 
+// --- Профиль пользователя ---
 app.post('/api/user/profile', requireAuth, upload.single('avatar'), async (req, res) => {
   try {
     const db = getDb();
@@ -104,16 +107,13 @@ app.post('/api/user/profile', requireAuth, upload.single('avatar'), async (req, 
     if (removeAvatar === 'true') {
       updateFields.push('avatar = NULL');
     } else if (req.file) {
-      // Process with sharp
       const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
       const filename = req.user.id + '-' + uniqueSuffix + '.webp';
       const filepath = path.join(uploadsDir, filename);
-      
       await sharp(req.file.buffer)
         .resize(400, 400, { fit: 'cover' })
         .webp({ quality: 80 })
         .toFile(filepath);
-
       updateFields.push('avatar = ?');
       params.push('/uploads/avatars/' + filename);
     }
@@ -138,12 +138,13 @@ app.post('/api/user/profile', requireAuth, upload.single('avatar'), async (req, 
   }
 });
 
+// --- Чаты ---
 app.get('/api/chats', async (req, res) => {
   try {
     const db = getDb();
     const chats = await db.all('SELECT * FROM chats');
     res.json(chats);
-  } catch(err) {
+  } catch {
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -159,34 +160,37 @@ app.get('/api/chats/:chatId/messages', async (req, res) => {
       ORDER BY m.created_at ASC
     `, [req.params.chatId]);
     res.json(messages);
-  } catch(err) {
+  } catch {
     res.status(500).json({ error: 'Server error' });
   }
 });
 
+// --- React SPA ---
 const distPath = path.join(__dirname, '../dist');
 app.use(express.static(distPath));
-app.get('*', (req, res) => {
-  if (fs.existsSync(path.join(distPath, 'index.html'))) {
-    res.sendFile(path.join(distPath, 'index.html'));
+app.get('/*', (req, res) => {
+  const indexFile = path.join(distPath, 'index.html');
+  if (fs.existsSync(indexFile)) {
+    res.sendFile(indexFile);
   } else {
     res.send('Frontend build not found. Run npm run build.');
   }
 });
 
+// --- Socket.IO ---
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);
-  
+
   socket.on('auth', async ({ token }) => {
     try {
       const decoded = jwt.verify(token, JWT_SECRET);
       socket.user = decoded;
       socket.join('user:' + decoded.id);
-      
+
       const db = getDb();
       await db.run("UPDATE users SET status = 'online' WHERE id = ?", [decoded.id]);
       io.emit('user:status', { userId: decoded.id, status: 'online' });
-    } catch (e) {
+    } catch {
       socket.emit('error', 'Invalid token');
     }
   });
@@ -215,10 +219,7 @@ io.on('connection', (socket) => {
       };
       
       io.to(chatId.toString()).emit('message:receive', msg);
-      
-      if (zashitaBot) {
-        zashitaBot.handleMessage(msg);
-      }
+      if (zashitaBot) zashitaBot.handleMessage(msg);
     } catch(err) {
       console.error(err);
     }
@@ -232,7 +233,7 @@ io.on('connection', (socket) => {
     if (!socket.user) return;
     io.to('user:' + targetId).emit('call:offer', { fromId: socket.user.id, fromUsername: socket.user.username, offer });
   });
-  
+
   socket.on('call:answer', ({ targetId, answer }) => {
     if (!socket.user) return;
     io.to('user:' + targetId).emit('call:answer', { fromId: socket.user.id, answer });
@@ -249,7 +250,7 @@ io.on('connection', (socket) => {
         const db = getDb();
         await db.run("UPDATE users SET status = 'offline', last_seen = CURRENT_TIMESTAMP WHERE id = ?", [socket.user.id]);
         io.emit('user:status', { userId: socket.user.id, status: 'offline' });
-      } catch(e) {}
+      } catch {}
     }
   });
 });
