@@ -166,11 +166,14 @@ app.get('/api/chats/:chatId/messages', async (req, res) => {
 });
 
 // --- React SPA ---
+// Статика
 const distPath = path.join(__dirname, '../dist');
 app.use(express.static(distPath));
 
-// Catch-all маршрут для SPA (path-to-regexp v6+)
-app.get('/:catchAll(.*)', (req, res) => {
+// --------------------
+// 🔹 SPA catch-all маршрут (в самый низ, после всех API)
+// --------------------
+app.get(/.*/, (req, res) => {
   const indexFile = path.join(distPath, 'index.html');
   if (fs.existsSync(indexFile)) {
     res.sendFile(indexFile);
